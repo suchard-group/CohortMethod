@@ -86,7 +86,9 @@ createPs <- function(cohortMethodData,
                        cvRepetitions = 10,
                        startingVariance = 0.01
                      ),
-                     estimator = "att") {
+                     estimator = "att",
+                     useBayes = FALSE,
+                     bayesSettings = createDefaultBayesSettings()) {
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertClass(cohortMethodData, "CohortMethodData", add = errorMessages)
   checkmate::assertDataFrame(population, null.ok = TRUE, add = errorMessages)
@@ -206,63 +208,78 @@ createPs <- function(cohortMethodData,
         }
       }
     }
-  }
-  if (is.null(error)) {
-    cyclopsFit <- tryCatch(
-      {
-        Cyclops::fitCyclopsModel(cyclopsData, prior = prior, control = control)
-      },
-      error = function(e) {
-        e$message
+    if(useBayes == FALSE){
+      if (is.null(error)) {
+        cyclopsFit <- tryCatch(
+          {
+            Cyclops::fitCyclopsModel(cyclopsData, prior = prior, control = control)
+          },
+          error = function(e) {
+            e$message
+          }
+        )
+        if (is.character(cyclopsFit)) {
+          if (stopOnError) {
+            stop(cyclopsFit)
+          } else {
+            error <- cyclopsFit
+          }
+        } else if (cyclopsFit$return_flag != "SUCCESS") {
+          if (stopOnError) {
+            stop(cyclopsFit$return_flag)
+          } else {
+            error <- cyclopsFit$return_flag
+          }
+        }
       }
-    )
-    if (is.character(cyclopsFit)) {
-      if (stopOnError) {
-        stop(cyclopsFit)
+      if (is.null(error)) {
+        error <- "OK"
+        cfs <- coef(cyclopsFit)
+        if (all(cfs[2:length(cfs)] == 0)) {
+          warning("All coefficients (except maybe the intercept) are zero. Either the covariates are completely uninformative or completely predictive of the treatment. Did you remember to exclude the treatment variables from the covariates?")
+        }
+        if (sampled) {
+          # Adjust intercept to non-sampled population:
+          yBar <- mean(population$treatment)
+          yOdds <- yBar / (1 - yBar)
+          yBarNew <- mean(fullPopulation$treatment)
+          yOddsNew <- yBarNew / (1 - yBarNew)
+          delta <- log(yOdds) - log(yOddsNew)
+          cfs[1] <- cfs[1] - delta # Equation (7) in King and Zeng (2001)
+          cyclopsFit$estimation$estimate[1] <- cfs[1]
+          covariateData$fullOutcomes <- fullPopulation
+          population <- fullPopulation
+          population$propensityScore <- predict(cyclopsFit, newOutcomes = covariateData$fullOutcomes, newCovariates = fullCovariates)
+        } else {
+          population$propensityScore <- predict(cyclopsFit)
+        }
+        attr(population, "metaData")$psModelCoef <- coef(cyclopsFit)
+        attr(population, "metaData")$psModelPriorVariance <- cyclopsFit$variance[1]
       } else {
-        error <- cyclopsFit
+        if (sampled) {
+          population <- fullPopulation
+        }
+        population$propensityScore <- population$treatment
+        attr(population, "metaData")$psError <- error
+        if (!is.null(ref)) {
+          attr(population, "metaData")$psHighCorrelation <- ref
+        }
       }
-    } else if (cyclopsFit$return_flag != "SUCCESS") {
-      if (stopOnError) {
-        stop(cyclopsFit$return_flag)
+    }
+    else if(useBayes == TRUE){
+      model <- getBayesPs(covariateData,
+                          covariates,
+                          covariateData$outcomes,
+                          bayesSettings)
+      cfs <- matrixStats::rowMedians(model$samples$coef)
+      #Prediction
+      if (sampled) {
+        stop("Bayesian machinery currently does not support sampled population for PS fitting")
       } else {
-        error <- cyclopsFit$return_flag
+        population$propensityScore <- ifelse(model$ps >= 0.5, 1, 0)
       }
     }
-  }
-  if (is.null(error)) {
-    error <- "OK"
-    cfs <- coef(cyclopsFit)
-    if (all(cfs[2:length(cfs)] == 0)) {
-      warning("All coefficients (except maybe the intercept) are zero. Either the covariates are completely uninformative or completely predictive of the treatment. Did you remember to exclude the treatment variables from the covariates?")
-    }
-    if (sampled) {
-      # Adjust intercept to non-sampled population:
-      yBar <- mean(population$treatment)
-      yOdds <- yBar / (1 - yBar)
-      yBarNew <- mean(fullPopulation$treatment)
-      yOddsNew <- yBarNew / (1 - yBarNew)
-      delta <- log(yOdds) - log(yOddsNew)
-      cfs[1] <- cfs[1] - delta # Equation (7) in King and Zeng (2001)
-      cyclopsFit$estimation$estimate[1] <- cfs[1]
-      covariateData$fullOutcomes <- fullPopulation
-      population <- fullPopulation
-      population$propensityScore <- predict(cyclopsFit, newOutcomes = covariateData$fullOutcomes, newCovariates = fullCovariates)
-    } else {
-      population$propensityScore <- predict(cyclopsFit)
-    }
-    attr(population, "metaData")$psModelCoef <- coef(cyclopsFit)
-    attr(population, "metaData")$psModelPriorVariance <- cyclopsFit$variance[1]
-  } else {
-    if (sampled) {
-      population <- fullPopulation
-    }
-    population$propensityScore <- population$treatment
-    attr(population, "metaData")$psError <- error
-    if (!is.null(ref)) {
-      attr(population, "metaData")$psHighCorrelation <- ref
-    }
-  }
+
   population$propensityScore <- round(population$propensityScore, 10)
   population <- computePreferenceScore(population)
   population <- computeIptw(population, estimator)
@@ -270,7 +287,13 @@ createPs <- function(cohortMethodData,
   delta <- Sys.time() - start
   ParallelLogger::logDebug("Propensity model fitting finished with status ", error)
   message("Creating propensity scores took ", signif(delta, 3), " ", attr(delta, "units"))
-  return(population)
+  if(useBayes == FALSE){
+    return(population)
+  } else {
+    return(list(population = population,
+                model = model))
+  }
+  }
 }
 
 computeIptw <- function(population, estimator = "ate") {
@@ -1291,4 +1314,222 @@ stratifyByPsAndCovariates <- function(population,
     stratificationColumns = stratificationColumns,
     baseSelection = baseSelection
   ))
+}
+
+
+#' Settings object for Bayesian Bridge model
+#'
+#' @description
+#' Returns a default list of settings for a Bayesian Bridge logistic model to fit the propensity score.
+#'
+#' @export
+createDefaultBayesSettings <- function(n_iter = 10000,
+                                       n_burnin = 1000,
+                                       bridge_exponent = 0.5,
+                                       regularizing_slab_size = 1,
+                                       thin = 1,
+                                       n_status_update = 100,
+                                       init = list(global_scale = 0.1),
+                                       coef_sampler_type = "cg",
+                                       params_to_fix = c(),
+                                       local_scale_sampler_type = "all",
+                                       params_to_save = c('coef', 'global_scale', 'logp'),
+                                       fixed_effects = NULL,
+                                       mixture = NULL){
+  if(is.data.frame(fixed_effects)){
+    n_fixed_effects <- nrow(fixed_effects)
+  } else{
+    n_fixed_effects <- 0
+  }
+
+  if(is.data.frame(mixture)){
+    n_mixture <- nrow(mixture)
+    params_to_save <- c(params_to_save, 'gamma')
+  } else{
+    n_mixture <- 0
+  }
+
+  settings <- list(
+    n_burnin = n_burnin,
+    n_iter = n_iter,
+    bridge_exponent = bridge_exponent,
+    regularizing_slab_size = regularizing_slab_size,
+    thin = thin,
+    n_status_update = n_status_update,
+    init = init,
+    coef_sampler_type = coef_sampler_type,
+    params_to_fix = params_to_fix,
+    local_scale_sampler_type = local_scale_sampler_type,
+    params_to_save = params_to_save,
+    fixed_effects = fixed_effects,
+    n_fixed_effects = n_fixed_effects,
+    mixture = mixture,
+    n_mixture = n_mixture
+  )
+  return(settings)
+}
+
+#' Get propensity score using Bayesian Bridge model
+#'
+#' @description
+#' Returns the samples from the Gibbs sampler as well as a propensity score estimate from prediction of model
+#'
+#' @export
+getBayesPs <- function(covariateData,
+                       covariates,
+                       outcomes,
+                       settings){
+  start <- Sys.time()
+  #remap covariates
+  rowMap <- data.frame(
+    rowId = covariates %>%
+      dplyr::arrange(.data$rowId) %>%
+      dplyr::distinct(.data$rowId) %>%
+      dplyr::pull()
+  )
+  rowMap$newRowId <- 1:nrow(rowMap)
+  covariateData$rowMap <- rowMap
+
+  colMap <- data.frame(
+    covariateId = covariates %>%
+      dplyr::inner_join(covariateData$rowMap, by = "rowId") %>%
+      dplyr::distinct(.data$covariateId) %>%
+      dplyr::pull()
+  )
+  colMap$newColId <- 1:nrow(colMap)
+  covariateData$colMap <- colMap
+
+  mappedData <- covariates %>%
+    dplyr::inner_join(covariateData$colMap, by = 'covariateId') %>%
+    dplyr::inner_join(covariateData$rowMap, by = 'rowId')
+
+  maxY <- max(colMap$newColId)
+  maxX <- max(rowMap$newRowId)
+
+  data <- Matrix::sparseMatrix(
+    i = mappedData %>% dplyr::select(.data$newRowId) %>% dplyr::pull(),
+    j = mappedData %>% dplyr::select(.data$newColId) %>% dplyr::pull(),
+    x = mappedData %>% dplyr::select(.data$covariateValue) %>% dplyr::pull(),
+    dims=c(maxX,maxY)
+  )
+
+  colnames(data) <- colMap %>% arrange(newColId) %>% pull(covariateId)
+
+  outcomes <- outcomes %>%
+    dplyr::inner_join(covariateData$rowMap, by = 'rowId') %>%
+    arrange(newRowId)
+
+  #check for fixed effects
+  sd_for_mixture <- Inf
+  mean_for_mixture <- Inf
+  sd_for_fixed_effect <- Inf
+  mean_for_fixed_effect <- Inf
+
+  order <- colnames(data)
+
+  if(settings$n_mixture > 0){
+    if(length(mixture$covariateId) != length(unique(mixture$covariateId))){
+      ParallelLogger::logError("Multiple means and standard deviations specified for one covariate.")
+    }
+    mixture <- settings$mixture %>% filter(covariateId %in% colnames(matrixData)) %>%
+      mutate(covariateId = as.character(covariateId))
+    matrixDataMixture <- matrixData[,mixture$covariateId]
+    matrixData <- matrixData[,!colnames(matrixData) %in% mixture$covariateId]
+    sd_for_mixture <- mixture$sd
+    mean_for_mixture <- mixture$mean
+  }
+  if(settings$n_fixed_effect > 0){
+    if(length(fixed_effects$covariateId) != length(unique(fixed_effects$covariateId))){
+      ParallelLogger::logError("Multiple means and standard deviations specified for one covariate.")
+    }
+    fixed_effects <- settings$fixed_effects %>% filter(covariateId %in% colnames(matrixData)) %>%
+      mutate(covariateId = as.character(covariateId))
+    matrixDataFixed <- matrixData[,fixed_effects$covariateId]
+    matrixData <- matrixData[,!colnames(matrixData) %in% fixed_effects$covariateId]
+    sd_for_fixed_effect <- fixed_effects$sd
+    mean_for_fixed_effect <- fixed_effects$mean
+  }
+
+  if(exists("matrixDataFixed") && exists("matrixDataMixture")){
+    matrixData <- cbind(matrixDataFixed, matrixDataMixture, matrixData)
+    n_mixture <- ncol(matrixDataMixture)
+  } else if (exists("matrixDataFixed") && !exists("matrixDataMixture")){
+    matrixData <- cbind(matrixDataFixed, matrixData)
+    n_mixture <- 0
+  } else if (!exists("matrixDataFixed") && exists("matrixDataMixture")){
+    matrixData <- cbind(matrixDataMixture, matrixData)
+    n_mixture <- ncol(matrixDataMixture)
+  } else{
+    n_mixture <- 0
+  }
+
+  ParallelLogger::logInfo('Running BayesBridge')
+  #run BayesBridge
+  start1 <- Sys.time()
+  y <- outcomes %>% select(y) %>% pull()
+  model <- create_model(y, data)
+  prior <- create_prior(bridge_exponent = settings$bridge_exponent, #param
+                        regularizing_slab_size = settings$regularizing_slab_size,
+                        n_fixed_effect = as.integer(settings$n_fixed_effect),
+                        sd_for_fixed_effect = sd_for_fixed_effect,
+                        mean_for_fixed_effect = mean_for_fixed_effect,
+                        n_mixture = n_mixture,
+                        sd_for_mixture = sd_for_mixture,
+                        mean_for_mixture = mean_for_mixture) #param
+  bridge <- instantiate_bayesbridge(model, prior)
+
+  n_iter <- settings$n_iter #param
+
+  # Options for global scale and local scale sampling:
+  options <- list()
+  if ("global_scale" %in% settings$params_to_fix){
+    options <- list("global_scale_update" = NULL)
+  }
+  if (settings$local_scale_sampler_type != "all"){
+    options <- c(options, list("local_scale_update" = settings$local_scale_sampler_type))
+  } else{
+    options <- NULL
+  }
+
+  gibbs_output <- gibbs(bridge,
+                        n_burnin = as.integer(settings$n_burnin),
+                        n_iter = as.integer(settings$n_iter),
+                        init = settings$init,
+                        thin = settings$thin,
+                        seed = settings$seed,
+                        coef_sampler_type = settings$coef_sampler_type,
+                        n_status_update = settings$n_status_update,
+                        params_to_save = settings$params_to_save,
+                        options = options)
+
+  comp1 <- Sys.time() - start1
+  ParallelLogger::logInfo("MCMC took ", signif(comp1, 3), " ", attr(comp1, "units"))
+
+  rownames(gibbs_output$samples$coef) <- c("(Intercept)", colnames(data))
+  ps <- getLinkPostMedian(data, gibbs_output$samples$coef)
+
+  gibbs_output$ps <- ps
+  return(gibbs_output)
+}
+
+getLinkPostMedian <- function(x, betas){
+  out <- matrix(NA, nrow = nrow(x), ncol = ncol(betas))
+  #get posterior median predictive values
+  for(i in 1:ncol(betas)){
+    coefficients <- betas[,i]
+    intercept <- coefficients[names(coefficients)%in%'(Intercept)']
+    if(length(intercept)==0) intercept <- 0
+    coefficients <- coefficients[!names(coefficients)%in%'(Intercept)']
+    beta <- as.numeric(coefficients)
+    value <- x %*% beta
+    value[is.na(value)] <- 0
+    value <- value + intercept
+    link <- function(x){
+      return(1/(1 + exp(0 - x)))
+    }
+    value <- link(value) %>% as.vector()
+    out[,i] <- value
+  }
+  valueMed <- apply(out, 1, median)
+  return(valueMed)
 }
