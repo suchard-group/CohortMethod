@@ -276,7 +276,7 @@ createPs <- function(cohortMethodData,
       if (sampled) {
         stop("Bayesian machinery currently does not support sampled population for PS fitting")
       } else {
-        population$propensityScore <- ifelse(model$ps >= 0.5, 1, 0)
+        population$propensityScore <- model$ps
       }
     }
 
@@ -1382,7 +1382,7 @@ getBayesPs <- function(covariateData,
   start <- Sys.time()
   #remap covariates
   rowMap <- data.frame(
-    rowId = covariates %>%
+    rowId = outcomes %>%
       dplyr::arrange(.data$rowId) %>%
       dplyr::distinct(.data$rowId) %>%
       dplyr::pull()
