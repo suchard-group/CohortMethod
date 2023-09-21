@@ -1335,7 +1335,8 @@ createDefaultBayesSettings <- function(n_iter = 10000,
                                        local_scale_sampler_type = "all",
                                        params_to_save = c('coef', 'global_scale', 'logp'),
                                        fixed_effects = NULL,
-                                       mixture = NULL){
+                                       mixture = NULL,
+                                       q_for_mixture = 0.5){
   if(is.data.frame(fixed_effects)){
     n_fixed_effects <- nrow(fixed_effects)
   } else{
@@ -1364,7 +1365,8 @@ createDefaultBayesSettings <- function(n_iter = 10000,
     fixed_effects = fixed_effects,
     n_fixed_effects = n_fixed_effects,
     mixture = mixture,
-    n_mixture = n_mixture
+    n_mixture = n_mixture,
+    q_for_mixture = q_for_mixture
   )
   return(settings)
 }
@@ -1474,6 +1476,7 @@ getBayesPs <- function(covariateData,
                         sd_for_fixed_effect = sd_for_fixed_effect,
                         mean_for_fixed_effect = mean_for_fixed_effect,
                         n_mixture = n_mixture,
+                        q_for_mixture = settings$q_for_mixture,
                         sd_for_mixture = sd_for_mixture,
                         mean_for_mixture = mean_for_mixture) #param
   bridge <- instantiate_bayesbridge(model, prior)
