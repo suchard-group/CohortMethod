@@ -280,19 +280,19 @@ createPs <- function(cohortMethodData,
       }
     }
 
-  population$propensityScore <- round(population$propensityScore, 10)
-  population <- computePreferenceScore(population)
-  population <- computeIptw(population, estimator)
-  attr(population, "metaData")$estimator <- estimator
-  delta <- Sys.time() - start
-  ParallelLogger::logDebug("Propensity model fitting finished with status ", error)
-  message("Creating propensity scores took ", signif(delta, 3), " ", attr(delta, "units"))
-  if(useBayes == FALSE){
-    return(population)
-  } else {
-    return(list(population = population,
-                model = model))
-  }
+    population$propensityScore <- round(population$propensityScore, 10)
+    population <- computePreferenceScore(population)
+    population <- computeIptw(population, estimator)
+    attr(population, "metaData")$estimator <- estimator
+    delta <- Sys.time() - start
+    ParallelLogger::logDebug("Propensity model fitting finished with status ", error)
+    message("Creating propensity scores took ", signif(delta, 3), " ", attr(delta, "units"))
+    if(useBayes == FALSE){
+      return(population)
+    } else {
+      return(list(population = population,
+                  model = model))
+    }
   }
 }
 
@@ -1373,49 +1373,24 @@ createDefaultBayesSettings <- function(n_iter = 10000,
 #' Returns the samples from the Gibbs sampler as well as a propensity score estimate from prediction of model
 #'
 #' @export
+#' Get propensity score using Bayesian Bridge model
+#'
+#' @description
+#' Returns the samples from the Gibbs sampler as well as a propensity score estimate from prediction of model
+#'
+#' @export
 getBayesPs <- function(covariateData,
                        covariates,
                        outcomes,
                        settings){
   start <- Sys.time()
   #remap covariates
-  rowMap <- data.frame(
-    rowId = outcomes %>%
-      dplyr::arrange(.data$rowId) %>%
-      dplyr::distinct(.data$rowId) %>%
-      dplyr::pull()
-  )
-  rowMap$newRowId <- 1:nrow(rowMap)
-  covariateData$rowMap <- rowMap
+  sparse <- returnSparseMatrix(covariateData = covariateData,
+                               covariates = covariates,
+                               outcomes = outcomes)
 
-  colMap <- data.frame(
-    covariateId = covariates %>%
-      dplyr::inner_join(covariateData$rowMap, by = "rowId") %>%
-      dplyr::distinct(.data$covariateId) %>%
-      dplyr::pull()
-  )
-  colMap$newColId <- 1:nrow(colMap)
-  covariateData$colMap <- colMap
-
-  mappedData <- covariates %>%
-    dplyr::inner_join(covariateData$colMap, by = 'covariateId') %>%
-    dplyr::inner_join(covariateData$rowMap, by = 'rowId')
-
-  maxY <- max(colMap$newColId)
-  maxX <- max(rowMap$newRowId)
-
-  data <- Matrix::sparseMatrix(
-    i = mappedData %>% dplyr::select(.data$newRowId) %>% dplyr::pull(),
-    j = mappedData %>% dplyr::select(.data$newColId) %>% dplyr::pull(),
-    x = mappedData %>% dplyr::select(.data$covariateValue) %>% dplyr::pull(),
-    dims=c(maxX,maxY)
-  )
-
-  colnames(data) <- colMap %>% arrange(newColId) %>% pull(covariateId)
-
-  outcomes <- outcomes %>%
-    dplyr::inner_join(covariateData$rowMap, by = 'rowId') %>%
-    arrange(newRowId)
+  data <- sparse$x
+  outcomes <- sparse$y
 
   #check for fixed effects
   sd_for_mixture <- Inf
@@ -1426,13 +1401,15 @@ getBayesPs <- function(covariateData,
   order <- colnames(data)
 
   if(!is.null(settings$mixture)){
+    mixture <- settings$mixture %>% filter(covariateId %in% colnames(data)) %>%
+      mutate(covariateId = as.character(covariateId))
+  }
+  if(!is.null(settings$mixture)){
     if(length(mixture$covariateId) != length(unique(mixture$covariateId))){
       ParallelLogger::logError("Multiple means and standard deviations specified for one covariate.")
     }
-    mixture <- settings$mixture %>% filter(covariateId %in% colnames(matrixData)) %>%
-      mutate(covariateId = as.character(covariateId))
-    matrixDataMixture <- matrixData[,mixture$covariateId]
-    matrixData <- matrixData[,!colnames(matrixData) %in% mixture$covariateId]
+    dataMixture <- data[,mixture$covariateId]
+    data <- data[,!colnames(data) %in% mixture$covariateId]
     sd_for_mixture <- mixture$sd
     mean_for_mixture <- mixture$mean
   }
@@ -1440,20 +1417,20 @@ getBayesPs <- function(covariateData,
     if(length(fixed_effects$covariateId) != length(unique(fixed_effects$covariateId))){
       ParallelLogger::logError("Multiple means and standard deviations specified for one covariate.")
     }
-    fixed_effects <- settings$fixed_effects %>% filter(covariateId %in% colnames(matrixData)) %>%
+    fixed_effects <- settings$fixed_effects %>% filter(covariateId %in% colnames(data)) %>%
       mutate(covariateId = as.character(covariateId))
-    matrixDataFixed <- matrixData[,fixed_effects$covariateId]
-    matrixData <- matrixData[,!colnames(matrixData) %in% fixed_effects$covariateId]
+    dataFixed <- data[,fixed_effects$covariateId]
+    data <- data[,!colnames(data) %in% fixed_effects$covariateId]
     sd_for_fixed_effect <- fixed_effects$sd
     mean_for_fixed_effect <- fixed_effects$mean
   }
 
-  if(exists("matrixDataFixed") && exists("matrixDataMixture")){
-    matrixData <- cbind(matrixDataFixed, matrixDataMixture, matrixData)
-  } else if (exists("matrixDataFixed") && !exists("matrixDataMixture")){
-    matrixData <- cbind(matrixDataFixed, matrixData)
-  } else if (!exists("matrixDataFixed") && exists("matrixDataMixture")){
-    matrixData <- cbind(matrixDataMixture, matrixData)
+  if(exists("dataFixed") && exists("dataMixture")){
+    data <- cbind(dataFixed, dataMixture, data)
+  } else if (exists("dataFixed") && !exists("dataMixture")){
+    data <- cbind(dataFixed, data)
+  } else if (!exists("dataFixed") && exists("dataMixture")){
+    data <- cbind(dataMixture, data)
   }
 
   ParallelLogger::logInfo('Running BayesBridge')
@@ -1480,7 +1457,9 @@ getBayesPs <- function(covariateData,
   }
   if (settings$local_scale_sampler_type != "all"){
     options <- c(options, list("local_scale_update" = settings$local_scale_sampler_type))
-  } else{
+  }
+
+  if(length(options) == 0){
     options <- NULL
   }
 
@@ -1526,3 +1505,48 @@ getLinkPostMedian <- function(x, betas){
   valueMed <- apply(out, 1, median)
   return(valueMed)
 }
+
+returnSparseMatrix <- function(covariateData,
+                               covariates,
+                               outcomes){
+  rowMap <- data.frame(
+    rowId = outcomes %>%
+      dplyr::arrange(.data$rowId) %>%
+      dplyr::distinct(.data$rowId) %>%
+      dplyr::pull()
+  )
+  rowMap$newRowId <- 1:nrow(rowMap)
+  covariateData$rowMap <- rowMap
+
+  colMap <- data.frame(
+    covariateId = covariates %>%
+      dplyr::inner_join(covariateData$rowMap, by = "rowId") %>%
+      dplyr::distinct(.data$covariateId) %>%
+      dplyr::pull()
+  )
+  colMap$newColId <- 1:nrow(colMap)
+  covariateData$colMap <- colMap
+
+  mappedData <- covariates %>%
+    dplyr::inner_join(covariateData$colMap, by = 'covariateId') %>%
+    dplyr::inner_join(covariateData$rowMap, by = 'rowId')
+
+  maxY <- max(colMap$newColId)
+  maxX <- max(rowMap$newRowId)
+
+  data <- Matrix::sparseMatrix(
+    i = mappedData %>% dplyr::select(.data$newRowId) %>% dplyr::pull(),
+    j = mappedData %>% dplyr::select(.data$newColId) %>% dplyr::pull(),
+    x = mappedData %>% dplyr::select(.data$covariateValue) %>% dplyr::pull(),
+    dims=c(maxX,maxY)
+  )
+
+  colnames(data) <- colMap %>% arrange(newColId) %>% pull(covariateId)
+  outcomes <- covariateData$outcomes %>%
+    dplyr::inner_join(covariateData$rowMap, by = 'rowId') %>%
+    arrange(newRowId)
+
+  return(list(x = data,
+              y = outcomes))
+}
+
