@@ -1344,10 +1344,7 @@ createDefaultBayesSettings <- function(n_iter = 10000,
   }
 
   if(is.data.frame(mixture)){
-    n_mixture <- nrow(mixture)
-    params_to_save <- c(params_to_save, 'gamma')
-  } else{
-    n_mixture <- 0
+    params_to_save <- c(params_to_save, 'gamma', 'q')
   }
 
   settings <- list(
@@ -1365,7 +1362,6 @@ createDefaultBayesSettings <- function(n_iter = 10000,
     fixed_effects = fixed_effects,
     n_fixed_effects = n_fixed_effects,
     mixture = mixture,
-    n_mixture = n_mixture,
     q_for_mixture = q_for_mixture
   )
   return(settings)
@@ -1429,7 +1425,7 @@ getBayesPs <- function(covariateData,
 
   order <- colnames(data)
 
-  if(settings$n_mixture > 0){
+  if(!is.null(settings$mixture)){
     if(length(mixture$covariateId) != length(unique(mixture$covariateId))){
       ParallelLogger::logError("Multiple means and standard deviations specified for one covariate.")
     }
@@ -1454,15 +1450,10 @@ getBayesPs <- function(covariateData,
 
   if(exists("matrixDataFixed") && exists("matrixDataMixture")){
     matrixData <- cbind(matrixDataFixed, matrixDataMixture, matrixData)
-    n_mixture <- ncol(matrixDataMixture)
   } else if (exists("matrixDataFixed") && !exists("matrixDataMixture")){
     matrixData <- cbind(matrixDataFixed, matrixData)
-    n_mixture <- 0
   } else if (!exists("matrixDataFixed") && exists("matrixDataMixture")){
     matrixData <- cbind(matrixDataMixture, matrixData)
-    n_mixture <- ncol(matrixDataMixture)
-  } else{
-    n_mixture <- 0
   }
 
   ParallelLogger::logInfo('Running BayesBridge')
@@ -1475,7 +1466,6 @@ getBayesPs <- function(covariateData,
                         n_fixed_effect = as.integer(settings$n_fixed_effect),
                         sd_for_fixed_effect = sd_for_fixed_effect,
                         mean_for_fixed_effect = mean_for_fixed_effect,
-                        n_mixture = n_mixture,
                         q_for_mixture = settings$q_for_mixture,
                         sd_for_mixture = sd_for_mixture,
                         mean_for_mixture = mean_for_mixture) #param
