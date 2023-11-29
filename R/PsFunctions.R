@@ -1330,13 +1330,11 @@ createDefaultBayesSettings <- function(n_iter = 10000,
                                        thin = 1,
                                        n_status_update = 100,
                                        init = list(global_scale = 0.1),
+                                       options = list(),
                                        coef_sampler_type = "cg",
-                                       params_to_fix = c(),
-                                       local_scale_sampler_type = "all",
                                        params_to_save = c('coef', 'global_scale', 'logp'),
                                        fixed_effects = NULL,
-                                       mixture = NULL,
-                                       q_for_mixture = 0.5){
+                                       mixture = NULL){
   if(is.data.frame(fixed_effects)){
     n_fixed_effects <- nrow(fixed_effects)
   } else{
@@ -1355,14 +1353,12 @@ createDefaultBayesSettings <- function(n_iter = 10000,
     thin = thin,
     n_status_update = n_status_update,
     init = init,
+    options = options,
     coef_sampler_type = coef_sampler_type,
-    params_to_fix = params_to_fix,
-    local_scale_sampler_type = local_scale_sampler_type,
     params_to_save = params_to_save,
     fixed_effects = fixed_effects,
     n_fixed_effects = n_fixed_effects,
-    mixture = mixture,
-    q_for_mixture = q_for_mixture
+    mixture = mixture
   )
   return(settings)
 }
@@ -1443,25 +1439,11 @@ getBayesPs <- function(covariateData,
                         n_fixed_effect = as.integer(settings$n_fixed_effect),
                         sd_for_fixed_effect = sd_for_fixed_effect,
                         mean_for_fixed_effect = mean_for_fixed_effect,
-                        q_for_mixture = settings$q_for_mixture,
                         sd_for_mixture = sd_for_mixture,
                         mean_for_mixture = mean_for_mixture) #param
   bridge <- instantiate_bayesbridge(model, prior)
 
   n_iter <- settings$n_iter #param
-
-  # Options for global scale and local scale sampling:
-  options <- list()
-  if ("global_scale" %in% settings$params_to_fix){
-    options <- list("global_scale_update" = NULL)
-  }
-  if (settings$local_scale_sampler_type != "all"){
-    options <- c(options, list("local_scale_update" = settings$local_scale_sampler_type))
-  }
-
-  if(length(options) == 0){
-    options <- NULL
-  }
 
   gibbs_output <- gibbs(bridge,
                         n_burnin = as.integer(settings$n_burnin),
@@ -1472,7 +1454,7 @@ getBayesPs <- function(covariateData,
                         coef_sampler_type = settings$coef_sampler_type,
                         n_status_update = settings$n_status_update,
                         params_to_save = settings$params_to_save,
-                        options = options)
+                        options = settings$options)
 
   comp1 <- Sys.time() - start1
   ParallelLogger::logInfo("MCMC took ", signif(comp1, 3), " ", attr(comp1, "units"))
